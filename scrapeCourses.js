@@ -3,7 +3,7 @@ const fs = require('fs');
 
 async function scrapeCourseDetails(page) {
     try {
-        await page.waitForSelector('#course-pills-2', { timeout: 30000 });
+        await page.waitForSelector('#course-pills-2', { timeout: 60000 }); // Syllabus tab
         const details = await page.evaluate(() => {
             const syllabusElement = document.querySelector('#course-pills-2');
             return syllabusElement ? {
@@ -14,26 +14,32 @@ async function scrapeCourseDetails(page) {
         const schedule = await scrapeCourseSchedule(page);
         return { ...details, schedule };
     } catch (err) {
-        console.error('Error scraping course details:', err);
-        return { title: 'Error', content: 'Failed to scrape', schedule: [] };
+        console.error('Error scraping course details:', err.message);
+        return { title: 'Error', content: 'Failed to scrape syllabus', schedule: [] };
     }
 }
 
-async function scrapeCourseSchedule(page, retries = 2) {
+async function scrapeCourseSchedule(page, retries = 3) {
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            // Click the schedule tab if it exists
+            // Ensure the schedule tab is present and clickable
             const scheduleTab = await page.$('#course-pills-tab-1');
             if (scheduleTab) {
-                await Promise.all([
-                    scheduleTab.click(),
-                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => null)
-                ]);
+                await scheduleTab.click();
+                // Wait for potential navigation or content load after click
+                await Promise.race([
+                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }),
+                    page.waitForSelector('#xcustomers', { timeout: 60000 })
+                ]).catch(() => null); // Ignore navigation timeout if selector appears
+            } else {
+                console.log('Schedule tab not found, skipping to table check');
             }
 
-            await page.waitForSelector('#xcustomers', { timeout: 30000 });
-            const scheduleData = await page.$$eval('#xcustomers tbody tr', rows => {
-                return rows.map(row => {
+            // Wait for the schedule table explicitly
+            await page.waitForSelector('#xcustomers', { timeout: 60000 });
+            const scheduleData = await page.evaluate(() => {
+                const rows = document.querySelectorAll('#xcustomers tbody tr');
+                return Array.from(rows).map(row => {
                     const cells = row.querySelectorAll('td');
                     return {
                         venue: cells[0]?.textContent.trim() || '',
@@ -44,7 +50,7 @@ async function scrapeCourseSchedule(page, retries = 2) {
                         register_link: cells[4]?.querySelector('a[href*="register"]')?.href || ''
                     };
                 });
-            }, { timeout: 30000 });
+            });
 
             return scheduleData.length > 0 ? scheduleData : [{ venue: 'No schedule available', start_date: '', end_date: '', net_fees: '', pdf_link: '', register_link: '' }];
         } catch (err) {
@@ -52,14 +58,14 @@ async function scrapeCourseSchedule(page, retries = 2) {
             if (attempt === retries) {
                 return [{ venue: 'Error scraping schedule', start_date: '', end_date: '', net_fees: '', pdf_link: '', register_link: '' }];
             }
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds before retrying
         }
     }
 }
 
 async function scrapePageData(page, url) {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForSelector('#customers', { timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
+    await page.waitForSelector('#customers', { timeout: 60000 });
 
     const pageData = await page.evaluate(() => {
         const header = document.querySelector('.h4.pb-2')?.textContent.trim() || '';
@@ -103,18 +109,18 @@ async function scrapePageData(page, url) {
         return { header, description, coursesTitles, cities, topCourses };
     });
 
-    // Scrape details for each course with throttling to avoid timeouts
+    // Scrape details for each course with throttling
     for (let i = 0; i < pageData.coursesTitles.length; i++) {
         const course = pageData.coursesTitles[i];
         console.log(`Scraping details for: ${course.title}`);
         try {
-            await page.goto(course.url, { waitUntil: 'networkidle2', timeout: 60000 });
+            await page.goto(course.url, { waitUntil: 'networkidle2', timeout: 90000 });
             course.details = await scrapeCourseDetails(page);
         } catch (err) {
-            console.error(`Failed to scrape details for ${course.title}:`, err);
+            console.error(`Failed to scrape details for ${course.title}:`, err.message);
             course.details = { title: 'Error', content: 'Navigation failed', schedule: [] };
         }
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Throttle requests
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Throttle requests
     }
 
     return pageData;
@@ -123,11 +129,11 @@ async function scrapePageData(page, url) {
 (async () => {
     const browser = await puppeteer.launch({
         headless: false,
-        protocolTimeout: 60000, // Increase protocol timeout to 60 seconds
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        protocolTimeout: 120000, // Increase to 120 seconds
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        defaultViewport: null // Use full screen to avoid rendering issues
     });
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
 
     try {
         const url = 'https://www.bmc.net/training/1/Management-and-Leadership';
